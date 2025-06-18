@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from torch.utils.data import DataLoader
 from models.unet_generator import UNetGenerator
 from models.discriminator import FaceDiscriminator
+from models.attribute_head import AttributeHeader
 from models.cam import compute_cam
 from dataset import FaceDataset, split_dataset
 
@@ -18,7 +19,7 @@ class Args:
     lr_g: float = 2e-4
     lr_d: float = 1e-4
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    image_size: int = 256
+    image_size: int = 164
     real_folder: str = "datasets/images/FakeAVCeleb/real"
     fake_folder: str = "datasets/images/FakeAVCeleb/fake"
     att_bboxs_path: str = "datasets/att_bboxs.json"
@@ -29,6 +30,7 @@ class AdversarialTrainer:
         self.args = args
         self.G = UNetGenerator().to(args.device)
         self.D = FaceDiscriminator().to(args.device)
+        self.A = AttributeHeader().to(args.device)
         
         self.opt_G = torch.optim.AdamW(self.G.parameters(), lr=args.lr_g, weight_decay=1e-4)
         self.opt_D = torch.optim.AdamW(self.D.parameters(), lr=args.lr_d, weight_decay=1e-4)
@@ -38,8 +40,8 @@ class AdversarialTrainer:
         # Load datasets
         self.real_dataset = FaceDataset(args.real_folder, args.image_size)
         self.fake_dataset = FaceDataset(args.fake_folder, args.image_size)
-        real_train, real_val = split_dataset(self.real_dataset, val_ratio=0.9995)
-        fake_train, fake_val = split_dataset(self.fake_dataset, val_ratio=0.9999)
+        real_train, real_val = split_dataset(self.real_dataset, val_ratio=0.2)
+        fake_train, fake_val = split_dataset(self.fake_dataset, val_ratio=0.2)
 
         self.real_train_loader = DataLoader(real_train, batch_size=args.batch_size, shuffle=True, drop_last=True)
         self.fake_train_loader = DataLoader(fake_train, batch_size=args.batch_size, shuffle=True, drop_last=True)
@@ -54,22 +56,31 @@ class AdversarialTrainer:
     def train(self):
         for epoch in range(1, self.args.epochs + 1):
             real_cycle = cycle(self.real_train_loader)
-            for i, fake in enumerate(self.fake_train_loader):
-                real = next(real_cycle).to(self.args.device)
-                fake = fake.to(self.args.device)
+            for i, (fake_img, fake_att_gt) in tqdm(enumerate(self.fake_train_loader)):
+                real_img, real_att_gt = next(real_cycle)
+                real_img = real_img.to(self.args.device)
+                fake_img = fake_img.to(self.args.device)    
+                real_att_gt = real_att_gt.to(self.args.device)
+                fake_att_gt = fake_att_gt.to(self.args.device)
 
                 # ---------------------- Generator forward ----------------------
                 # No CAM available yet ⇒ zeros tensor acts as neutral map
-                zero_cam = torch.zeros(fake.size(0), 1, fake.size(2), fake.size(3), device=fake.device)
-                refined = self.G(fake, zero_cam)
+                zero_cam = torch.zeros(fake_img.size(0), 1, fake_img.size(2), fake_img.size(3), device=fake_img.device)
+                refined = self.G(fake_img, zero_cam)
 
                 # ---------------- Discriminator forward / update ---------------
                 self.opt_D.zero_grad(set_to_none=True)
-
-                logits_real, _ = self.D(real)
-                logits_fake, _ = self.D(refined.detach())
-                loss_D = self.bce(logits_real, self._label(real.size(0), 0)) + \
-                         self.bce(logits_fake, self._label(fake.size(0), 1))
+                logits_real, feat_real = self.D(real_img)
+                logits_fake, feat_fake = self.D(refined.detach())
+                
+                logits_attributes_real = self.A(feat_real)
+                logits_attributes_fake = self.A(feat_fake)
+                
+                loss_D = self.bce(logits_real, self._label(real_img.size(0), 0)) + \
+                         self.bce(logits_fake, self._label(fake_img.size(0), 1)) + \
+                         F.smooth_l1_loss(logits_attributes_real, real_att_gt) + \
+                         F.smooth_l1_loss(logits_attributes_fake, fake_att_gt)
+                        
                 loss_D.backward()
                 self.opt_D.step()
 
@@ -79,10 +90,10 @@ class AdversarialTrainer:
 
                 # ------------------ Generator update (with CAM) ----------------
                 self.opt_G.zero_grad(set_to_none=True)
-                refined2 = self.G(fake, cam)  # second pass with feedback
+                refined2 = self.G(fake_img, cam)  # second pass with feedback
                 logits_fake2, _ = self.D(refined2)
 
-                loss_G = self.bce(logits_fake2, self._label(fake.size(0), 0)) + self.mse(refined2, fake)
+                loss_G = self.bce(logits_fake2, self._label(fake_img.size(0), 0)) + self.mse(refined2, fake_img)
                 loss_G.backward()
                 self.opt_G.step()
 
