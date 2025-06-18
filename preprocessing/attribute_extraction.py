@@ -4,6 +4,7 @@ import os
 import numpy as np
 import argparse
 from tqdm import tqdm
+import json
 
 # Argument parser for configurable behavior
 parser = argparse.ArgumentParser(description="Detect facial attributes and apply black masks, either individually or combined")
@@ -41,6 +42,8 @@ coords = {
     'mouth': list(range(48, 68))
 }
 
+bounding_boxes = {}
+
 # Iterate through dataset
 to_iterate = list(os.walk(input_root))
 for root, dirs, files in tqdm(to_iterate, total=len(to_iterate)):
@@ -62,30 +65,16 @@ for root, dirs, files in tqdm(to_iterate, total=len(to_iterate)):
 
         # Get landmarks
         landmarks = predictor(gray, face)
-        masked_img = np.zeros_like(image)
         
-        for coord in coords.values():
+        img_bboxes = {}
+
+        for att_name, coord in coords.items():
             pts = [landmarks.part(i) for i in coord]
-            bbox = get_bounding_box(pts, image.shape, margin=att_margin)
-            x1, y1, x2, y2 = bbox
-            masked_img[y1:y2, x1:x2] = image[y1:y2, x1:x2]
-            
+            img_bboxes[att_name] = get_bounding_box(pts, image.shape, margin=att_margin)
 
-        x1 = face.left() - face_margin
-        y1 = face.top() - face_margin + 10
-        x2 = face.right() + face_margin
-        y2 = face.bottom() + face_margin
-        face_crop = image[max(y1,0):min(y2,image.shape[0]), max(x1,0):min(x2,image.shape[1])]
-        masked_face = masked_img[max(y1,0):min(y2,image.shape[0]), max(x1,0):min(x2,image.shape[1])]
-        
-        # Save cropped face
-        out_dir = os.path.join(output_root, 'face', rel_dir)
-        os.makedirs(out_dir, exist_ok=True)
-        cv2.imwrite(os.path.join(out_dir, file), face_crop)
-        
-        # Save masked image
-        out_dir = os.path.join(output_root, f'masked_face', rel_dir)
-        os.makedirs(out_dir, exist_ok=True)
-        cv2.imwrite(os.path.join(out_dir, file), masked_face)
+        bounding_boxes[img_path] = img_bboxes
 
-print("Processing complete.")
+json_out_path = os.path.join(output_root, "bounding_boxes.json")
+with open(json_out_path, "w") as f:
+    json.dump(bounding_boxes, f, indent=4)
+print(f"Saved bounding boxes to {json_out_path}")

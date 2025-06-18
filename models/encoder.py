@@ -2,15 +2,19 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 
-class Encoder(nn.Module):
-    def __init__(self, embedding_dim=128):
+class FaceDiscriminator(nn.Module):
+    def __init__(self):
         super().__init__()
-        base = models.resnet18(pretrained=True)
-        self.features = nn.Sequential(*list(base.children())[:-1])
-        self.fc = nn.Linear(base.fc.in_features, embedding_dim)
+        backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V2)
+        self.features = nn.Sequential(*list(backbone.children())[:-2])  # retain conv layers
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(backbone.fc.in_features, 1)  # binary real/fake logits
+        )
 
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
-        return x
+    def forward(self, x: torch.Tensor):
+        feat = self.features(x)
+        pooled = self.pool(feat)
+        logits = self.head(pooled)
+        return logits.squeeze(1), feat  # return conv feat for CAM
