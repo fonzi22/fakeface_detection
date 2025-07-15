@@ -29,10 +29,10 @@ predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 def get_bounding_box(points, img_shape, margin=0):
     x_coords = [p.x for p in points]
     y_coords = [p.y for p in points]
-    x_min = max(min(x_coords) - margin, 0)
-    x_max = min(max(x_coords) + margin, img_shape[1])
-    y_min = max(min(y_coords) - margin, 0)
-    y_max = min(max(y_coords) + margin, img_shape[0])
+    x_min = max(min(x_coords) - margin, 0) / image.shape[1]
+    x_max = min(max(x_coords) + margin, img_shape[1]) / image.shape[1]
+    y_min = max(min(y_coords) - margin, 0) / image.shape[0]
+    y_max = min(max(y_coords) + margin, img_shape[0]) / image.shape[0]
     return x_min, y_min, x_max, y_max
 
 # Facial landmark index ranges
@@ -66,15 +66,13 @@ for root, dirs, files in tqdm(to_iterate, total=len(to_iterate)):
         # Get landmarks
         landmarks = predictor(gray, face)
         
-        img_bboxes = {}
+        img_bboxes = []
 
         for att_name, coord in coords.items():
             pts = [landmarks.part(i) for i in coord]
-            img_bboxes[att_name] = get_bounding_box(pts, image.shape, margin=att_margin)
+            img_bboxes.append(get_bounding_box(pts, image.shape, margin=att_margin))
 
-        bounding_boxes[img_path] = img_bboxes
-
-json_out_path = os.path.join(output_root, "bounding_boxes.json")
-with open(json_out_path, "w") as f:
-    json.dump(bounding_boxes, f, indent=4)
-print(f"Saved bounding boxes to {json_out_path}")
+        save_path = img_path.replace('.jpg', '.npy').replace('.png', '.npy').replace('images', 'annotations')
+        if not os.path.exists(os.path.dirname(save_path)):
+            os.makedirs(os.path.dirname(save_path))
+        np.save(save_path, img_bboxes)

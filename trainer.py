@@ -19,10 +19,10 @@ class Args:
     lr_g: float = 2e-4
     lr_d: float = 1e-4
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    image_size: int = 164
-    real_folder: str = "datasets/images/FakeAVCeleb/real"
-    fake_folder: str = "datasets/images/FakeAVCeleb/fake"
-    att_bboxs_path: str = "datasets/att_bboxs.json"
+    image_size: tuple = (180, 180)  
+    crop_size: tuple = (164, 164)
+    real_folder: str = "datasets/images/fake_forensics/real"
+    fake_folder: str = "datasets/images/fake_forensics/fake"
     save_dir: str = "checkpoints"
 
 class AdversarialTrainer:
@@ -38,8 +38,8 @@ class AdversarialTrainer:
         self.mse = nn.MSELoss()
 
         # Load datasets
-        self.real_dataset = FaceDataset(args.real_folder, args.image_size)
-        self.fake_dataset = FaceDataset(args.fake_folder, args.image_size)
+        self.real_dataset = FaceDataset(args.real_folder, args.image_size, args.crop_size)
+        self.fake_dataset = FaceDataset(args.fake_folder, args.image_size, args.crop_size)
         real_train, real_val = split_dataset(self.real_dataset, val_ratio=0.2)
         fake_train, fake_val = split_dataset(self.fake_dataset, val_ratio=0.2)
 
@@ -56,6 +56,7 @@ class AdversarialTrainer:
     def train(self):
         for epoch in range(1, self.args.epochs + 1):
             real_cycle = cycle(self.real_train_loader)
+            total_loss_D, total_loss_G = 0.0, 0.0
             for i, (fake_img, fake_att_gt) in tqdm(enumerate(self.fake_train_loader)):
                 real_img, real_att_gt = next(real_cycle)
                 real_img = real_img.to(self.args.device)
@@ -87,7 +88,7 @@ class AdversarialTrainer:
                 # ------------- Compute CAM on *current* refined batch ----------
                 cam = compute_cam(self.D, refined, class_idx=1)
                 cam = F.interpolate(cam, size=refined.shape[2:], mode="bilinear", align_corners=False)
-
+            
                 # ------------------ Generator update (with CAM) ----------------
                 self.opt_G.zero_grad(set_to_none=True)
                 refined2 = self.G(fake_img, cam)  # second pass with feedback
@@ -96,13 +97,21 @@ class AdversarialTrainer:
                 loss_G = self.bce(logits_fake2, self._label(fake_img.size(0), 0)) + self.mse(refined2, fake_img)
                 loss_G.backward()
                 self.opt_G.step()
-
+                
+                
+                total_loss_D += loss_D.item()
+                total_loss_G += loss_G.item()
                 if i % 25 == 0:
                     print(f"[Epoch {epoch}/{self.args.epochs}] Step {i:03d}| "
                           f"loss_D = {loss_D.item():.4f} | loss_G = {loss_G.item():.4f}")
             
             self.validate_accuracy()
+            print(f"Loss D: {total_loss_D / len(self.fake_train_loader):.4f}, "
+                  f"Loss G: {total_loss_G / len(self.fake_train_loader):.4f}")
             # Save checkpoints at epoch end
+            if not os.path.exists(self.args.save_dir):
+                os.makedirs(self.args.save_dir)
+        
             torch.save({"G": self.G.state_dict(), "D": self.D.state_dict()},
                        os.path.join(self.args.save_dir, f"epoch_{epoch}.pth"))
             print("Saved checkpoint for epoch", epoch)
